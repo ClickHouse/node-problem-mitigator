@@ -1,0 +1,285 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/helm-unittest/helm-unittest/main/schema/helm-testsuite.json
+suite: Jobs library
+templates:
+  - configmap.yaml
+release:
+  name: unit-test
+  namespace: node-problem-mitigator
+
+tests:
+  - it: drops null conditions and jobs from the ConfigMap
+    set:
+      app:
+        enabled: true
+        config:
+          conditions:
+            Manual: null
+            KernelDeadlock: {}
+      jobs:
+        removed: null
+    asserts:
+      - notMatchRegex:
+          path: data.config
+          pattern: "Manual:"
+      - matchRegex:
+          path: data.config
+          pattern: "KernelDeadlock:"
+      - notExists:
+          path: data.jobs
+
+  - it: renders pre-mitigation and mitigation Jobs with resolved ServiceAccounts
+    set:
+      app:
+        config:
+          conditions:
+            KernelDeadlock:
+              preMitigationJob:
+                name: capture
+                failurePolicy: Block
+              mitigationJob:
+                name: terminate
+      jobs:
+        terminate:
+          serviceAccount:
+            name: terminator
+          template:
+            spec:
+              template:
+                spec:
+                  containers:
+                    - name: terminate
+                      image: terminate:1
+        capture:
+          serviceAccount: {}
+          template:
+            spec:
+              template:
+                spec:
+                  containers:
+                    - name: capture
+                      image: capture:1
+    asserts:
+      - matchRegex:
+          path: data.jobs
+          pattern: "(?m)^terminate:\\n  template:"
+      - matchRegex:
+          path: data.jobs
+          pattern: "(?m)^capture:\\n  template:"
+      - matchRegex:
+          path: data.jobs
+          pattern: "serviceAccountName: terminator"
+      - matchRegex:
+          path: data.jobs
+          pattern: "serviceAccountName: unit-test-node-problem-mitigator-capture"
+      - matchRegex:
+          path: data.config
+          pattern: "failurePolicy: Block"
+      - matchRegex:
+          path: data.config
+          pattern: "name: capture"
+      - matchRegex:
+          path: data.config
+          pattern: "(?s)mitigationJob:\\n\\s+name: terminate"
+
+  - it: preserves template ServiceAccounts when no serviceAccount block is set
+    set:
+      jobs:
+        capture:
+          template:
+            spec:
+              template:
+                spec:
+                  serviceAccountName: existing
+                  containers:
+                    - name: capture
+                      image: capture:1
+    asserts:
+      - matchRegex:
+          path: data.jobs
+          pattern: "serviceAccountName: existing"
+
+  - it: applies Helm tpl to Job templates
+    set:
+      jobs:
+        terminate:
+          template:
+            spec:
+              template:
+                spec:
+                  containers:
+                    - name: terminate
+                      image: "{{ .Release.Namespace }}/terminate:1"
+    asserts:
+      - matchRegex:
+          path: data.jobs
+          pattern: "image: '?node-problem-mitigator/terminate:1'?"
+
+  - it: requires every Job template
+    set:
+      jobs:
+        capture: {}
+    asserts:
+      - failedTemplate:
+          errorPattern: "jobs.capture.template is required"
+
+  - it: requires containers in every Job template
+    set:
+      jobs:
+        capture:
+          template:
+            spec:
+              backoffLimit: 1
+    asserts:
+      - failedTemplate:
+          errorPattern: "jobs.capture.template.spec.template.spec.containers is required"
+
+  - it: rejects ttlSecondsAfterFinished in a Job template
+    set:
+      jobs:
+        capture:
+          template:
+            spec:
+              ttlSecondsAfterFinished: 3600
+              template:
+                spec:
+                  containers:
+                    - name: capture
+                      image: registry.example/capture:test
+    asserts:
+      - failedTemplate:
+          errorPattern: "jobs.capture.template.spec.ttlSecondsAfterFinished is not supported"
+
+  - it: requires preMitigationJob to be a map
+    set:
+      app:
+        config:
+          conditions:
+            KernelDeadlock:
+              preMitigationJob: capture
+    asserts:
+      - failedTemplate:
+          errorPattern: "app.config.conditions.KernelDeadlock.preMitigationJob must be a map with a name"
+
+  - it: requires a preMitigationJob name
+    set:
+      app:
+        config:
+          conditions:
+            KernelDeadlock:
+              preMitigationJob: {}
+    asserts:
+      - failedTemplate:
+          errorPattern: "app.config.conditions.KernelDeadlock.preMitigationJob.name is required"
+
+  - it: rejects references to missing Jobs
+    set:
+      app:
+        config:
+          conditions:
+            KernelDeadlock:
+              preMitigationJob:
+                name: missing
+    asserts:
+      - failedTemplate:
+          errorPattern: 'preMitigationJob.name "missing" does not match a Job in top-level jobs'
+
+  - it: rejects mitigationJob references to missing Jobs
+    set:
+      app:
+        config:
+          conditions:
+            KernelDeadlock:
+              mitigationJob:
+                name: missing
+    asserts:
+      - failedTemplate:
+          errorPattern: 'mitigationJob.name "missing" does not match a Job in top-level jobs'
+
+  - it: rejects a mitigationJob failurePolicy
+    set:
+      jobs:
+        terminate:
+          template:
+            spec:
+              template:
+                spec:
+                  containers:
+                    - name: terminate
+                      image: terminate:1
+      app:
+        config:
+          conditions:
+            KernelDeadlock:
+              mitigationJob:
+                name: terminate
+                failurePolicy: Block
+    asserts:
+      - failedTemplate:
+          errorPattern: 'mitigationJob cannot set failurePolicy'
+
+  - it: rejects a mitigationJob without taint
+    set:
+      jobs:
+        terminate:
+          template:
+            spec:
+              template:
+                spec:
+                  containers:
+                    - name: terminate
+                      image: terminate:1
+      app:
+        config:
+          conditions:
+            KernelDeadlock:
+              taint: false
+              mitigationJob:
+                name: terminate
+    asserts:
+      - failedTemplate:
+          errorPattern: 'mitigationJob requires taint'
+
+  - it: rejects a blocking preMitigationJob without taint
+    set:
+      jobs:
+        capture:
+          template:
+            spec:
+              template:
+                spec:
+                  containers:
+                    - name: capture
+                      image: capture:1
+      app:
+        config:
+          conditions:
+            KernelDeadlock:
+              taint: false
+              preMitigationJob:
+                name: capture
+                failurePolicy: Block
+    asserts:
+      - failedTemplate:
+          errorPattern: 'failurePolicy Block requires taint'
+
+  - it: rejects unsupported preMitigationJob failure policies
+    set:
+      jobs:
+        capture:
+          template:
+            spec:
+              template:
+                spec:
+                  containers:
+                    - name: capture
+                      image: capture:1
+      app:
+        config:
+          conditions:
+            KernelDeadlock:
+              preMitigationJob:
+                name: capture
+                failurePolicy: Retry
+    asserts:
+      - failedTemplate:
+          errorPattern: 'preMitigationJob.failurePolicy must be Continue or Block, got "Retry"'

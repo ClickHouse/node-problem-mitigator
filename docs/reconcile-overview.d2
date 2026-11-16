@@ -1,0 +1,65 @@
+# Reconcile overview for node-problem-mitigator.
+# Render with make diagrams. The detailed flow is in reconcile-flow.d2.
+
+direction: down
+
+vars: {
+  d2-config: {
+    layout-engine: elk
+    pad: 30
+  }
+}
+
+classes: {
+  read: {
+    style: {
+      fill: "#eef2ff"
+      stroke: "#4f46e5"
+      stroke-width: 2
+    }
+  }
+  write: {
+    style: {
+      fill: "#fff3d4"
+      stroke: "#b45309"
+      stroke-width: 2
+    }
+  }
+  spine: {
+    style: {
+      stroke: "#4f46e5"
+      stroke-width: 4
+    }
+  }
+}
+
+src: Watch node object {
+  style: {
+    fill: "#ffffff"
+    stroke: "#4f46e5"
+    stroke-width: 2
+  }
+}
+
+p1: 1. Admission\n\nDoes the node still exist, and is the config loadable?\nFollow the node's launched mitigation Jobs.\n\nleaves early if: node gone, config malformed {class: read}
+
+p2: 2. Resolve\n\nWhich condition owns this node, and which steps\ndoes it run? Eligible conditions merge into the steps.\n\nleaves early if: still inside its "for" window, nothing firing {class: read}
+
+p3: 3. Gates\n\nIs the controller allowed to start this mitigation,\nor add the taint to a running one?\n\nleaves early if: disabled, excluded by label / annotation /\ntaint / namespace, dry-run, global cooldown active {class: read}
+
+p4: 4. Commit\n\nThe controller persists the cooldown, then records\nthe owner and steps, taints the node if the steps\ntaint, and selects the pre-mitigation Job, in one update.\nA failed cooldown write prevents tainting. {class: write}
+
+p5: 5. Continuation\n\nThe pre-mitigation Job runs first.\nPending Jobs and Block failures stop progress.\nThe controller then drains and launches the\nmitigation Job. Pre-mitigation Job waits do not\ncount against the drain timeout.\n\nends here when: the steps are complete, the drain stalls\nwithout a mitigation Job, or progress is blocked.\nA mitigation without the taint ends once its condition\nrecovers and its pre-mitigation Job finishes. {class: write}
+
+src -> p1: {class: spine}
+p1 -> p2: ok {class: spine}
+p2 -> p3: new or more aggressive steps {class: spine}
+p3 -> p4: allowed {class: spine}
+p4 -> p5: committed {class: spine}
+
+p2 -> p5: running mitigation, same steps:\nskip the gates and continue\nwhere it left off {
+  style: {
+    stroke: "#b45309"
+    stroke-width: 3
+  }
+}

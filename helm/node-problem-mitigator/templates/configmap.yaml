@@ -1,0 +1,31 @@
+{{- $config := deepCopy (default dict .Values.app.config) }}
+{{- $conditions := dict }}
+{{- range $name, $condition := $config.conditions }}
+{{- if not (kindIs "invalid" $condition) }}{{- $_ := set $conditions $name $condition }}{{- end }}
+{{- end }}
+{{- $_ := set $config "conditions" $conditions }}
+{{- if and (eq (toString .Values.app.enabled) "true") (eq (len $conditions) 0) }}
+{{- fail "app.config.conditions must contain at least one condition when app.enabled is true" }}
+{{- end }}
+{{- if hasKey $config "cooldown" }}{{- $_ := set $config "cooldown" (toString $config.cooldown) }}{{- end }}
+{{- if hasKey $config "stallTimeout" }}{{- $_ := set $config "stallTimeout" (toString $config.stallTimeout) }}{{- end }}
+{{- if hasKey $config "jobRetention" }}{{- $_ := set $config "jobRetention" (toString $config.jobRetention) }}{{- end }}
+{{- range $config.drainRequests }}{{- if hasKey . "timeout" }}{{- $_ := set . "timeout" (toString .timeout) }}{{- end }}{{- end }}
+{{- $jobs := include "node-problem-mitigator.jobs" . | fromYaml }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: node-problem-mitigator-config
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "node-problem-mitigator.labels" . | nindent 4 }}
+    app.kubernetes.io/part-of: node-problem-mitigator
+data:
+  enabled: {{ .Values.app.enabled | quote }}
+  config: |
+{{- tpl (toYaml $config) . | nindent 4 }}
+  {{- with $jobs }}
+  jobs: |
+{{- tpl (toYaml .) $ | nindent 4 }}
+  {{- end }}

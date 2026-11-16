@@ -1,0 +1,51 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/helm-unittest/helm-unittest/main/schema/helm-testsuite.json
+suite: generic controller ConfigMap
+templates:
+  - configmap.yaml
+release:
+  name: unit-test
+
+tests:
+  - it: leaves mitigation disabled without operator opt-in
+    asserts:
+      - equal:
+          path: data.enabled
+          value: "false"
+
+  - it: renders drainRequests with a string timeout
+    set:
+      app.config.drainRequests:
+        - podSelector:
+            matchLabels:
+              app: example
+          annotationKey: example.com/drain-requested
+          timeout: 45m
+    asserts:
+      - matchRegex:
+          path: data.config
+          pattern: "drainRequests:\\n- annotationKey: example.com/drain-requested\\n  podSelector:\\n    matchLabels:\\n      app: example\\n  timeout: 45m\\n"
+
+  - it: renders a numeric drainRequests timeout as a string
+    set:
+      app.config.drainRequests:
+        - podSelector:
+            matchLabels:
+              app: example
+          annotationKey: example.com/drain-requested
+          timeout: 0
+    asserts:
+      - matchRegex:
+          path: data.config
+          pattern: "  timeout: \"0\"\\n"
+
+  - it: requires at least one non-null condition when enabled
+    set:
+      app:
+        enabled: true
+        config:
+          conditions:
+            Manual: null
+    asserts:
+      - failedTemplate:
+          errorMessage: app.config.conditions must contain at least one condition when app.enabled is true
+

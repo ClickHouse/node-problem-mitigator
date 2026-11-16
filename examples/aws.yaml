@@ -1,0 +1,86 @@
+# EKS: terminate through IRSA, capture the Node before mitigation, and alert.
+# Replace the account ID and role names with your own.
+app:
+  enabled: true
+  config:
+    conditions:
+      KernelDeadlock:
+        taint: true
+        drain: true
+        # A deadlocked kernel may hang during guest OS shutdown.
+        jobEnv:
+          FORCE_TERMINATE: "true"
+        preMitigationJob:
+          name: capture-node
+        mitigationJob:
+          name: terminate
+      ReadonlyFilesystem:
+        drain: true
+        preMitigationJob:
+          name: capture-node
+      Manual:
+        drainTimeout: "0"
+        skipPodDeletion: true
+        jobEnv:
+          FORCE_TERMINATE: "true"
+        mitigationJob:
+          name: terminate
+    excludeNodeTaints:
+      - key: karpenter.sh/disrupted
+      - key: ToBeDeletedByClusterAutoscaler
+
+jobs:
+  terminate:
+    serviceAccount:
+      name: node-mitigator-sa
+      annotations:
+        eks.amazonaws.com/role-arn: arn:aws:iam::111122223333:role/node-problem-mitigator
+    template:
+      spec:
+        backoffLimit: 3
+        template:
+          spec:
+            containers:
+              - name: terminate
+                image: amazon/aws-cli:2.35.11@sha256:749bfaf91d690b9a1768083822d620f96c19defdf9ca2dc227eb3695281fda5b
+                command: ["sh", "-c"]
+                args:
+                  - |
+                    set -eu
+                    # providerID: aws:///<zone>/<instance-id>
+                    force=""
+                    # FORCE_TERMINATE powers off at once, without a guest OS shutdown.
+                    [ "${FORCE_TERMINATE:-}" = true ] && force="--force --skip-os-shutdown"
+                    aws ec2 terminate-instances --instance-ids "${NODE_PROBLEM_MITIGATOR_PROVIDER_ID##*/}" \
+                      --region "${NODE_PROBLEM_MITIGATOR_REGION:?node has no topology.kubernetes.io/region label}" $force
+  capture-node:
+    serviceAccount:
+      name: capture-node
+      clusterRules:
+        - apiGroups: [""]
+          resources: ["nodes"]
+          verbs: ["get"]
+    template:
+      spec:
+        backoffLimit: 1
+        template:
+          spec:
+            containers:
+              - name: capture
+                image: registry.k8s.io/kubectl:v1.35.0
+                args: ["get", "node", "$(NODE_PROBLEM_MITIGATOR_NODE_NAME)", "-o", "yaml"]
+
+serviceMonitor:
+  enabled: true
+
+prometheusRule:
+  enabled: true
+  extraAlerts:
+    - alert: NodeProblemMitigatorNodeMitigated
+      expr: max by (node_name, condition, tainted) (node_problem_mitigator_node_mitigated_info{condition="KernelDeadlock"}) == 1
+      for: 1m
+      keep_firing_for: 15m
+      labels:
+        severity: critical
+      annotations:
+        summary: Node {{ $labels.node_name }} was mitigated for {{ $labels.condition }}

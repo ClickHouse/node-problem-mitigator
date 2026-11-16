@@ -1,0 +1,303 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/helm-unittest/helm-unittest/main/schema/helm-testsuite.json
+suite: alerting rules
+templates:
+  - prometheusrule.yaml
+release:
+  name: unit-test
+  namespace: node-problem-mitigator
+capabilities:
+  apiVersions:
+    - monitoring.coreos.com/v1
+set:
+  prometheusRule:
+    enabled: true
+
+tests:
+  - it: renders the built-in alerts with default thresholds
+    asserts:
+      - lengthEqual:
+          path: spec.groups[0].rules
+          count: 5
+      - contains:
+          path: spec.groups[0].rules
+          content: {alert: NodeProblemMitigatorTooManyMitigatedNodes, for: 15m}
+          any: true
+      - contains:
+          path: spec.groups[0].rules
+          content: {alert: NodeProblemMitigatorNodeStuck, for: 4h}
+          any: true
+      - contains:
+          path: spec.groups[0].rules
+          content: {alert: MitigationDrainStalled, for: 10m}
+          any: true
+      - contains:
+          path: spec.groups[0].rules
+          content: {alert: NodeProblemMitigatorJobFailed, for: 0m}
+          any: true
+      - contains:
+          path: spec.groups[0].rules
+          content: {alert: NodeProblemMitigatorReconcileErrors, for: 15m}
+          any: true
+      - equal:
+          path: spec.groups[0].rules[0].expr
+          value: count(kube_node_spec_taint{key="clickhouse.com/node-problem-detector-bad-node"}) > 20
+      - equal:
+          path: spec.groups[0].rules[1].expr
+          value: max by (node_name, condition) (max_over_time(node_problem_mitigator_node_mitigated_info{tainted="true"}[1m])) == 1
+      - equal:
+          path: spec.groups[0].rules[2].expr
+          value: max by (node_name, condition) (node_problem_mitigator_drain_stalled_info) == 1
+      - equal:
+          path: spec.groups[0].rules[3].expr
+          value: max by (node_name, condition, kind, job_name) (max_over_time(node_problem_mitigator_job_failed_info[1m])) == 1
+      - equal:
+          path: spec.groups[0].rules[4].expr
+          value: sum by (reason) (increase(node_problem_mitigator_reconcile_errors_total[1h])) > 5
+
+  - it: applies threshold overrides to expressions and summaries
+    set:
+      prometheusRule:
+        alerts:
+          NodeProblemMitigatorTooManyMitigatedNodes:
+            threshold: 3
+          NodeProblemMitigatorReconcileErrors:
+            threshold: 10
+            window: 30m
+    asserts:
+      - equal:
+          path: spec.groups[0].rules[0].expr
+          value: count(kube_node_spec_taint{key="clickhouse.com/node-problem-detector-bad-node"}) > 3
+      - matchRegex:
+          path: spec.groups[0].rules[0].annotations.summary
+          pattern: \(threshold 3\)
+      - equal:
+          path: spec.groups[0].rules[4].expr
+          value: sum by (reason) (increase(node_problem_mitigator_reconcile_errors_total[30m])) > 10
+
+  - it: drops disabled alerts
+    set:
+      prometheusRule:
+        alerts:
+          NodeProblemMitigatorNodeStuck:
+            enabled: false
+    asserts:
+      - lengthEqual:
+          path: spec.groups[0].rules
+          count: 4
+      - notContains:
+          path: spec.groups[0].rules
+          content: {alert: NodeProblemMitigatorNodeStuck}
+          any: true
+
+  - it: renders templated labels and omits null label values
+    set:
+      prometheusRule:
+        clusterName: prod-1
+        labels:
+          team: '{{ .Release.Namespace }}'
+          removed: null
+        alerts:
+          NodeProblemMitigatorNodeStuck:
+            labels:
+              page: '{{ .Values.prometheusRule.clusterName }}'
+              removed: null
+            conditions:
+              KernelDeadlock:
+                labels:
+                  owner: '{{ .Release.Namespace }}'
+                  removed: null
+    asserts:
+      - equal:
+          path: spec.groups[0].rules[0].labels.team
+          value: node-problem-mitigator
+      - notExists:
+          path: spec.groups[0].rules[0].labels.removed
+      - equal:
+          path: spec.groups[0].rules[1].labels.page
+          value: prod-1
+      - notExists:
+          path: spec.groups[0].rules[1].labels.removed
+      - equal:
+          path: spec.groups[0].rules[2].labels.owner
+          value: node-problem-mitigator
+      - notExists:
+          path: spec.groups[0].rules[2].labels.removed
+
+  - it: layers shared labels, severity and per-alert labels, as strings
+    set:
+      prometheusRule:
+        labels:
+          team: platform
+          severity: info
+          page: "false"
+        alerts:
+          NodeProblemMitigatorNodeStuck:
+            severity: high
+            labels:
+              page: true
+    asserts:
+      - equal:
+          path: spec.groups[0].rules[1].labels
+          value:
+            team: platform
+            severity: high
+            page: "true"
+      - equal:
+          path: spec.groups[0].rules[2].labels
+          value:
+            team: platform
+            severity: warning
+            page: "false"
+
+  - it: lets per-alert annotations override built-ins without affecting other alerts
+    set:
+      prometheusRule:
+        dashboardUrl: https://grafana.example.com/d/node-problem-mitigator?var-cluster={{ $externalLabels.cluster }}
+        alerts:
+          NodeProblemMitigatorNodeStuck:
+            annotations:
+              description: Custom description.
+              dashboard_url: https://grafana.example.com/d/node-stuck
+    asserts:
+      - equal:
+          path: spec.groups[0].rules[0].annotations.dashboard_url
+          value: https://grafana.example.com/d/node-problem-mitigator?var-cluster={{ $externalLabels.cluster }}
+      - equal:
+          path: spec.groups[0].rules[1].annotations.dashboard_url
+          value: https://grafana.example.com/d/node-stuck
+      - equal:
+          path: spec.groups[0].rules[1].annotations.description
+          value: Custom description.
+
+  - it: gives each listed condition its own stuck rule and leaves the rest to the shared one
+    set:
+      prometheusRule:
+        labels:
+          team: platform
+        alerts:
+          NodeProblemMitigatorNodeStuck:
+            labels:
+              page: "true"
+            annotations:
+              runbook_url: https://example.com/stuck
+            conditions:
+              KernelDeadlock:
+                for: 30m
+              ReadonlyFilesystem:
+                for: 6h
+                severity: warning
+                labels:
+                  page: "false"
+    asserts:
+      - lengthEqual:
+          path: spec.groups[0].rules
+          count: 7
+      - equal:
+          path: spec.groups[0].rules[1].expr
+          value: max by (node_name, condition) (max_over_time(node_problem_mitigator_node_mitigated_info{tainted="true", condition!~"KernelDeadlock|ReadonlyFilesystem"}[1m])) == 1
+      - equal:
+          path: spec.groups[0].rules[1].for
+          value: 4h
+      - equal:
+          path: spec.groups[0].rules[2]
+          value:
+            alert: NodeProblemMitigatorNodeStuck
+            expr: max by (node_name, condition) (max_over_time(node_problem_mitigator_node_mitigated_info{tainted="true", condition="KernelDeadlock"}[1m])) == 1
+            for: 30m
+            labels:
+              team: platform
+              severity: critical
+              page: "true"
+            annotations:
+              summary: Node {{ $labels.node_name }} still tainted after 30m
+              description: The mitigation for {{ $labels.condition }} tainted node {{ $labels.node_name }} over 30m ago and the node still exists.
+              runbook_url: https://example.com/stuck
+      - equal:
+          path: spec.groups[0].rules[3].labels
+          value:
+            team: platform
+            severity: warning
+            page: "false"
+      - equal:
+          path: spec.groups[0].rules[3].for
+          value: 6h
+
+  - it: mutes a disabled condition and leaves a null condition to the shared stuck rule
+    set:
+      prometheusRule:
+        alerts:
+          NodeProblemMitigatorNodeStuck:
+            conditions:
+              KernelDeadlock:
+                enabled: false
+              ReadonlyFilesystem: null
+    asserts:
+      - lengthEqual:
+          path: spec.groups[0].rules
+          count: 5
+      - equal:
+          path: spec.groups[0].rules[1].expr
+          value: max by (node_name, condition) (max_over_time(node_problem_mitigator_node_mitigated_info{tainted="true", condition!~"KernelDeadlock"}[1m])) == 1
+
+  - it: rejects a condition entry that is not a map
+    set:
+      prometheusRule:
+        alerts:
+          NodeProblemMitigatorNodeStuck:
+            conditions:
+              KernelDeadlock: 30m
+    asserts:
+      - failedTemplate:
+          errorMessage: "prometheusRule.alerts.NodeProblemMitigatorNodeStuck.conditions.KernelDeadlock must be a map"
+
+  - it: names the cluster in every built-in summary
+    set:
+      prometheusRule:
+        clusterName: "{{ $externalLabels.cluster }}"
+    asserts:
+      - equal:
+          path: spec.groups[0].rules[4].annotations.summary
+          value: Reconcile errors with reason {{ $labels.reason }} on {{ $externalLabels.cluster }}
+      - matchRegex:
+          path: spec.groups[0].rules[1].annotations.summary
+          pattern: still tainted after 4h on \{\{ \$externalLabels.cluster \}\}$
+
+  - it: appends extra alerts unchanged after the built-in alerts
+    set:
+      prometheusRule:
+        labels:
+          team: platform
+        extraAlerts:
+          - alert: NodeMitigated
+            expr: node_problem_mitigator_node_mitigated_info == 1
+            keep_firing_for: 15m
+            labels:
+              page: "true"
+    asserts:
+      - equal:
+          path: spec.groups[0].rules[5]
+          value:
+            alert: NodeMitigated
+            expr: node_problem_mitigator_node_mitigated_info == 1
+            keep_firing_for: 15m
+            labels:
+              page: "true"
+
+  - it: labels the PrometheusRule for kube-prometheus-stack by default
+    asserts:
+      - equal:
+          path: metadata.labels.release
+          value: kube-prometheus-stack
+
+  - it: stamps additional labels on the PrometheusRule object
+    set:
+      prometheusRule:
+        additionalLabels:
+          release: monitoring
+    asserts:
+      - equal:
+          path: metadata.labels.release
+          value: monitoring
+      - equal:
+          path: metadata.name
+          value: unit-test-node-problem-mitigator-alert-rules

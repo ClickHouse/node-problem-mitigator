@@ -1,0 +1,136 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Run linter
+        run: make lint
+
+      - name: Run tests
+        run: make test
+
+      - name: Check for known vulnerabilities
+        run: make vuln
+
+  chart:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Helm
+        uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e # v5.1.0
+        with:
+          version: v4.3.0
+
+      - name: Install Helm unit test plugin
+        # The checksum pins the plugin, so Helm's signature check is skipped.
+        env:
+          PLUGIN_URL: https://github.com/helm-unittest/helm-unittest/releases/download/v1.1.2/unittest-1.1.2.tgz
+          PLUGIN_SHA256: f3f6e4bcfbb73bf573434444af4ea506caaeb6f71dbb9891b499758574dd3161
+        run: |
+          plugin="${RUNNER_TEMP}/unittest.tgz"
+          curl -fsSL -o "${plugin}" "${PLUGIN_URL}"
+          echo "${PLUGIN_SHA256}  ${plugin}" | sha256sum --check --strict
+          helm plugin install "${plugin}" --verify=false
+
+      - name: Lint chart
+        run: helm lint helm/node-problem-mitigator
+
+      - name: Render disabled chart with empty conditions
+        run: |
+          helm template node-problem-mitigator helm/node-problem-mitigator \
+            --set app.enabled=false \
+            --set-json 'app.config.conditions.Manual=null' > "${RUNNER_TEMP}/node-problem-mitigator-disabled.yaml"
+
+      - name: Reject enabled chart without conditions
+        run: |
+          if helm template node-problem-mitigator helm/node-problem-mitigator \
+            --set app.enabled=true \
+            --set-json 'app.config.conditions.Manual=null' > /dev/null; then
+            echo "expected enabled chart without conditions to fail validation" >&2
+            exit 1
+          fi
+
+      - name: Render examples
+        run: |
+          for values in examples/*.yaml; do
+            echo "::group::${values}"
+            helm lint helm/node-problem-mitigator --values "${values}"
+            helm template node-problem-mitigator helm/node-problem-mitigator \
+              --namespace node-problem-mitigator \
+              --api-versions monitoring.coreos.com/v1 \
+              --values "${values}" > /dev/null
+            echo "::endgroup::"
+          done
+
+      - name: Run chart unit tests
+        run: helm unittest helm/node-problem-mitigator
+
+  e2e:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Set up Helm
+        uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e # v5.1.0
+        with:
+          version: v4.3.0
+
+      - name: Set up ko
+        uses: ko-build/setup-ko@61b4d1d396f5b2e7d6bb6fefdce3dc38d1a13445 # v0.10
+        with:
+          version: v0.19.1
+
+      - name: Create Kind cluster
+        uses: helm/kind-action@ea822c7bf1874f08e5a491df991c228edffc3376 # v1.15.2
+        with:
+          version: v0.32.0
+          cluster_name: node-problem-mitigator-test-e2e
+          node_image: kindest/node:v1.34.8@sha256:02722c2dedddcfc00febf5d27fbeb9b7b2c14294c82109ff4a85d89ac9ba3256
+
+      - name: Run end-to-end tests
+        run: make test-e2e

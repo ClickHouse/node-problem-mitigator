@@ -1,0 +1,15 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/helm-unittest/helm-unittest/main/schema/helm-testsuite.json
+suite: alerting rules without Prometheus Operator CRDs
+templates:
+  - prometheusrule.yaml
+release:
+  name: unit-test
+
+tests:
+  - it: skips the PrometheusRule when the Prometheus Operator CRDs are absent
+    set:
+      prometheusRule:
+        enabled: true
+    asserts:
+      - hasDocuments:
+          count: 0

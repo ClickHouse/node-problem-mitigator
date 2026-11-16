@@ -1,0 +1,26 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "node-problem-mitigator.fullname" . }}
+  labels:
+    {{- include "node-problem-mitigator.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  # list to enumerate a node's pods; delete for a terminate drain past its timeout
+  # patch to set the drainRequest annotation on pods
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list", "delete", "patch"]
+  # Required by the "drain" mitigation to evict pods (honouring PodDisruptionBudgets).
+  - apiGroups: [""]
+    resources: ["pods/eviction"]
+    verbs: ["create"]
+  # The drain mitigation records Events on Node objects when evictions are
+  # blocked or fail. Events about cluster-scoped objects (Nodes) are written to
+  # the "default" namespace, so this grant must be cluster-scoped.
+  - apiGroups: ["events.k8s.io"]
+    resources: ["events"]
+    verbs: ["create", "patch"]

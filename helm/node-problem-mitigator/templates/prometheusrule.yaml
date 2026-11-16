@@ -1,0 +1,116 @@
+{{- if and .Values.prometheusRule.enabled (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1") }}
+{{- $pr := .Values.prometheusRule }}
+{{- $alerts := $pr.alerts | default dict }}
+{{- $fullname := include "node-problem-mitigator.fullname" . }}
+{{- $taintKey := "clickhouse.com/node-problem-detector-bad-node" }}
+{{- $on := "" }}
+{{- with $pr.clusterName }}{{ $on = printf " on %s" . }}{{ end }}
+{{- $rules := list }}
+
+{{- $alert := get $alerts "NodeProblemMitigatorTooManyMitigatedNodes" | default dict }}
+{{- if $alert.enabled }}
+{{- $rule := include "node-problem-mitigator.alertRule" (dict
+      "root" $
+      "name" "NodeProblemMitigatorTooManyMitigatedNodes"
+      "settings" $alert
+      "prometheusRule" $pr
+      "expr" (printf "count(kube_node_spec_taint{key=%q}) > %v" $taintKey $alert.threshold)
+      "summary" (printf "{{ $value }} nodes carry the bad-node taint (threshold %v)%s" $alert.threshold $on)
+      "description" "Check Node Problem Detector for false positives and whether tainted nodes are being replaced. To pause mitigation, set enabled to \"false\" in ConfigMap node-problem-mitigator-config.") | fromYaml }}
+{{- $rules = append $rules $rule }}
+{{- end }}
+
+{{- $alert = get $alerts "NodeProblemMitigatorNodeStuck" | default dict }}
+{{- if $alert.enabled }}
+{{- /* Each conditions entry gets its own rule with its settings over the alert's; the first rule covers the rest. */}}
+{{- $stuck := list }}
+{{- $excluded := list }}
+{{- range $condition, $override := $alert.conditions }}
+{{- if not (kindIs "invalid" $override) }}
+{{- if not (kindIs "map" $override) }}{{ fail (printf "prometheusRule.alerts.NodeProblemMitigatorNodeStuck.conditions.%s must be a map" $condition) }}{{ end }}
+{{- $excluded = append $excluded (regexQuoteMeta $condition) }}
+{{- $settings := dict "enabled" $alert.enabled "for" $alert.for "severity" $alert.severity }}
+{{- range $key := list "enabled" "for" "severity" }}{{ if hasKey $override $key }}{{ $_ := set $settings $key (get $override $key) }}{{ end }}{{ end }}
+{{- range $key := list "labels" "annotations" }}
+{{- $merged := deepCopy (get $alert $key | default dict) }}
+{{- range $name, $value := get $override $key | default dict }}{{ $_ := set $merged $name $value }}{{ end }}
+{{- $_ := set $settings $key $merged }}
+{{- end }}
+{{- if $settings.enabled }}{{ $stuck = append $stuck (dict "selector" (printf ", condition=%q" $condition) "settings" $settings) }}{{ end }}
+{{- end }}
+{{- end }}
+{{- $selector := "" }}
+{{- with $excluded }}{{ $selector = printf ", condition!~%q" (join "|" .) }}{{ end }}
+{{- range prepend $stuck (dict "selector" $selector "settings" $alert) }}
+{{- $rule := include "node-problem-mitigator.alertRule" (dict
+      "root" $
+      "name" "NodeProblemMitigatorNodeStuck"
+      "settings" .settings
+      "prometheusRule" $pr
+      "expr" (printf "max by (node_name, condition) (max_over_time(node_problem_mitigator_node_mitigated_info{tainted=\"true\"%s}[1m])) == 1" .selector)
+      "summary" (printf "Node {{ $labels.node_name }} still tainted after %s%s" (toString .settings.for) $on)
+      "description" (printf "The mitigation for {{ $labels.condition }} tainted node {{ $labels.node_name }} over %s ago and the node still exists." (toString .settings.for))) | fromYaml }}
+{{- $rules = append $rules $rule }}
+{{- end }}
+{{- end }}
+
+{{- $alert = get $alerts "MitigationDrainStalled" | default dict }}
+{{- if $alert.enabled }}
+{{- $rule := include "node-problem-mitigator.alertRule" (dict
+      "root" $
+      "name" "MitigationDrainStalled"
+      "settings" $alert
+      "prometheusRule" $pr
+      "expr" "max by (node_name, condition) (node_problem_mitigator_drain_stalled_info) == 1"
+      "summary" (printf "Node {{ $labels.node_name }} drain stalled%s" $on)
+      "description" "Pods on node {{ $labels.node_name }} stay Terminating past stallTimeout, so the drain cannot finish.") | fromYaml }}
+{{- $rules = append $rules $rule }}
+{{- end }}
+
+{{- $alert = get $alerts "NodeProblemMitigatorJobFailed" | default dict }}
+{{- if $alert.enabled }}
+{{- $rule := include "node-problem-mitigator.alertRule" (dict
+      "root" $
+      "name" "NodeProblemMitigatorJobFailed"
+      "settings" $alert
+      "prometheusRule" $pr
+      "expr" "max by (node_name, condition, kind, job_name) (max_over_time(node_problem_mitigator_job_failed_info[1m])) == 1"
+      "summary" (printf "Node {{ $labels.node_name }}: {{ $labels.kind }} Job {{ $labels.job_name }} failed%s" $on)
+      "description" (printf "The {{ $labels.kind }} Job {{ $labels.job_name }} for {{ $labels.condition }} failed on node {{ $labels.node_name }}. Check the node Events and Job logs in namespace %s." .Release.Namespace)) | fromYaml }}
+{{- $rules = append $rules $rule }}
+{{- end }}
+
+{{- $alert = get $alerts "NodeProblemMitigatorReconcileErrors" | default dict }}
+{{- if $alert.enabled }}
+{{- $rule := include "node-problem-mitigator.alertRule" (dict
+      "root" $
+      "name" "NodeProblemMitigatorReconcileErrors"
+      "settings" $alert
+      "prometheusRule" $pr
+      "expr" (printf "sum by (reason) (increase(node_problem_mitigator_reconcile_errors_total[%s])) > %v" (toString $alert.window) $alert.threshold)
+      "summary" (printf "Reconcile errors with reason {{ $labels.reason }}%s" $on)
+      "description" (printf "More than %v reconcile errors in %s with reason {{ $labels.reason }}. Check the controller logs." $alert.threshold (toString $alert.window))) | fromYaml }}
+{{- $rules = append $rules $rule }}
+{{- end }}
+
+{{- range $pr.extraAlerts }}
+{{- $rules = append $rules . }}
+{{- end }}
+{{- if $rules }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ $fullname }}-alert-rules
+  labels:
+    {{- include "node-problem-mitigator.labels" . | nindent 4 }}
+    {{- with $pr.additionalLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: ./node-problem-mitigator.rules
+      rules:
+        {{- toYaml $rules | nindent 8 }}
+{{- end }}
+{{- end }}

@@ -1,0 +1,161 @@
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  pullPolicy: IfNotPresent
+  repository: ghcr.io/clickhouse/node-problem-mitigator
+  tag: ""
+
+imagePullSecrets: []
+replicas: 1
+
+resources:
+  limits:
+    cpu: 200m
+    memory: 128Mi
+  requests:
+    cpu: 100m
+    memory: 64Mi
+
+podAnnotations: {}
+podLabels: {}
+extraEnv: []
+extraArgs: []
+extraVolumeMounts: []
+extraVolumes: []
+nodeSelector: {}
+tolerations: []
+affinity: {}
+priorityClassName: ""
+podSecurityContext: {}
+
+app:
+  config:
+    conditions:
+      # KernelDeadlock:
+      #   drainTimeout: 30m
+      #   preMitigationJob:
+      #     name: capture-node
+      #   mitigationJob:
+      #     name: terminate
+      # ReadonlyFilesystem:
+      #   taint: false
+      #   preMitigationJob:
+      #     name: capture-node
+      # No node reports Manual; an operator starts it on one node with
+      # kubectl annotate node <node> clickhouse.com/node-mitigated-condition=Manual
+      # Any configured condition can be started this way. Set to null to remove it.
+      Manual: {}
+    cooldown: 15m
+    stallTimeout: 5m
+    jobRetention: 1h
+    excludeNodeLabels: {}
+    excludeNodeTaints: []
+    excludeNodeAnnotations: {}
+    excludeNamespaces: []
+    # Ask another controller to move matching pods by annotating them, instead
+    # of evicting them. Pods still on the node after timeout are evicted.
+    # The first entry whose podSelector matches a pod applies to it.
+    # drainRequests:
+    #   - podSelector:
+    #       matchLabels:
+    #         app.kubernetes.io/name: example-db
+    #     annotationKey: example.com/drain-requested
+    #     annotationValue: "true"
+    #     timeout: 30m
+  dryRun: false
+  enabled: false
+  leaderElect: true
+
+jobs: {}
+  # capture-node:
+  #   serviceAccount:
+  #     create: true
+  #     name: <release full name>-capture-node
+  #     annotations: {}
+  #     rules: []
+  #     clusterRules: []
+  #   template:
+  #     spec:
+  #       template:
+  #         spec:
+  #           containers:
+  #             - name: capture
+  #               image: registry.k8s.io/kubectl:v1.35.0
+  #               args: ["get", "node", "$(NODE_PROBLEM_MITIGATOR_NODE_NAME)", "-o", "yaml"]
+  # terminate:
+  #   serviceAccount:
+  #     create: true
+  #     name: node-mitigator-sa
+  #     annotations: {}
+  #       # AWS IRSA: eks.amazonaws.com/role-arn: arn:aws:iam::111122223333:role/node-problem-mitigator
+  #       # GCP Workload Identity: iam.gke.io/gcp-service-account: node-problem-mitigator@my-project.iam.gserviceaccount.com
+  #       # Azure Workload Identity: azure.workload.identity/client-id: 00000000-0000-0000-0000-000000000000
+  #   template:
+  #     spec:
+  #       template:
+  #         spec:
+  #           containers:
+  #             - name: terminate
+  #               image: example/terminate:latest
+
+serviceMonitor:
+  enabled: false
+  port: 8080
+  interval: 30s
+  scrapeTimeout: 10s
+  additionalLabels:
+    release: kube-prometheus-stack
+
+prometheusRule:
+  enabled: false
+  additionalLabels:
+    release: kube-prometheus-stack
+  # Shared and per-alert label values are rendered as Helm templates.
+  labels: {}
+  dashboardUrl: ""
+  clusterName: ""
+  alerts:
+    NodeProblemMitigatorTooManyMitigatedNodes:
+      enabled: true
+      threshold: 20
+      for: 15m
+      severity: critical
+      labels: {}
+      annotations: {}
+    NodeProblemMitigatorNodeStuck:
+      enabled: true
+      for: 4h
+      severity: critical
+      labels: {}
+      annotations: {}
+      # Per-condition settings keyed by condition name. Each entry gets its own rule with its
+      # enabled, for, severity, labels and annotations over the ones above; the shared rule skips it.
+      # A null entry falls back to the shared rule.
+      conditions: {}
+    NodeProblemMitigatorJobFailed:
+      enabled: true
+      for: 0m
+      severity: warning
+      labels: {}
+      annotations: {}
+    MitigationDrainStalled:
+      enabled: true
+      for: 10m
+      severity: warning
+      labels: {}
+      annotations: {}
+    NodeProblemMitigatorReconcileErrors:
+      enabled: true
+      threshold: 5
+      window: 1h
+      for: 15m
+      severity: warning
+      labels: {}
+      annotations: {}
+  extraAlerts: []
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""

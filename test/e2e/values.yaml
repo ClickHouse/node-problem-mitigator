@@ -1,0 +1,72 @@
+app:
+  enabled: true
+  dryRun: false
+  leaderElect: true
+  config:
+    cooldown: 30s
+    conditions:
+      KernelDeadlock:
+        drain: false
+      FrequentKubeletRestart:
+        drain: false
+      E2EDrain:
+        mitigationJob:
+          name: mark-node
+        preMitigationJob:
+          name: prepare-node
+          failurePolicy: Block
+
+jobs:
+  prepare-node:
+    serviceAccount:
+      create: true
+      clusterRules:
+        - apiGroups: [""]
+          resources: ["nodes"]
+          verbs: ["get", "patch"]
+    template:
+      spec:
+        backoffLimit: 0
+        activeDeadlineSeconds: 120
+        template:
+          spec:
+            nodeSelector:
+              node-role.kubernetes.io/control-plane: ""
+            restartPolicy: Never
+            containers:
+              - name: annotate-node
+                image: registry.k8s.io/kubectl:v1.34.8
+                command: ["kubectl"]
+                args:
+                  - annotate
+                  - node
+                  - "$(NODE_PROBLEM_MITIGATOR_NODE_NAME)"
+                  - node-problem-mitigator-e2e/pre-mitigation=complete
+                  - --overwrite
+  mark-node:
+    serviceAccount:
+      create: true
+      name: node-mitigator-sa
+      clusterRules:
+        - apiGroups: [""]
+          resources: ["nodes"]
+          verbs: ["get", "patch"]
+    template:
+      spec:
+        backoffLimit: 0
+        activeDeadlineSeconds: 120
+        template:
+          spec:
+            nodeSelector:
+              node-role.kubernetes.io/control-plane: ""
+            restartPolicy: Never
+            containers:
+              - name: annotate-node
+                image: registry.k8s.io/kubectl:v1.34.8
+                command: ["kubectl"]
+                args:
+                  - annotate
+                  - node
+                  - "$(NODE_PROBLEM_MITIGATOR_NODE_NAME)"
+                  - node-problem-mitigator-e2e/mitigation=complete
+                  - --overwrite

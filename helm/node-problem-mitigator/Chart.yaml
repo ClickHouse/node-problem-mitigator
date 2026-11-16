@@ -1,0 +1,18 @@
+apiVersion: v2
+appVersion: 0.1.0
+name: node-problem-mitigator
+description: A Helm chart for node-problem-mitigator, a Kubernetes controller that automatically mitigates nodes reporting problems via node conditions
+type: application
+version: 0.1.0
+kubeVersion: ">= 1.22.0-0"
+home: https://github.com/ClickHouse/node-problem-mitigator
+sources:
+  - https://github.com/ClickHouse/node-problem-mitigator
+keywords:
+  - node-problem-detector
+  - node-health
+  - node-repair
+  - drain
+maintainers:
+  - name: ClickHouse
+    url: https://github.com/ClickHouse

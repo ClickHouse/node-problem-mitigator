@@ -1,0 +1,15 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "node-problem-mitigator.fullname" . }}
+  labels:
+    {{- include "node-problem-mitigator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "node-problem-mitigator.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "node-problem-mitigator.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}

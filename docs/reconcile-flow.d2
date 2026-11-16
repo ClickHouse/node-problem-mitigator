@@ -1,0 +1,266 @@
+# Reconcile flow for node-problem-mitigator.
+# Render with make diagrams. Plain labels remain visible in GitHub SVG previews.
+
+direction: down
+
+vars: {
+  d2-config: {
+    layout-engine: elk
+    pad: 30
+  }
+}
+
+classes: {
+  gate: {
+    shape: diamond
+    style: {
+      fill: "#eef2ff"
+      stroke: "#4f46e5"
+      stroke-width: 2
+    }
+  }
+  step: {
+    style: {
+      fill: "#ffffff"
+      stroke: "#4f46e5"
+    }
+  }
+  mutate: {
+    style: {
+      fill: "#fff3d4"
+      stroke: "#b45309"
+      stroke-width: 2
+    }
+  }
+  skip: {
+    style: {
+      fill: "#f1f5f9"
+      stroke: "#94a3b8"
+      font-color: "#475569"
+      stroke-dash: 3
+    }
+  }
+  fail: {
+    style: {
+      fill: "#fee2e2"
+      stroke: "#dc2626"
+      font-color: "#7f1d1d"
+    }
+  }
+  phase: {
+    # Top-left, because a centred title sits exactly where the incoming spine
+    # edge enters the container and the two overlap.
+    label.near: top-left
+    style: {
+      fill: "#fbfcfe"
+      stroke: "#94a3b8"
+      font-size: 22
+    }
+  }
+  spine: {
+    style: {
+      stroke: "#4f46e5"
+      stroke-width: 3
+    }
+  }
+}
+
+legend: Legend {
+  label.near: top-left
+  style: {
+    fill: "#ffffff"
+    stroke: "#94a3b8"
+    font-size: 20
+  }
+
+  l1: step {class: step}
+  l2: decision {class: gate}
+  l3: mutates the node {class: mutate}
+  l4: returns, no change\n(skip metric) {class: skip}
+  l5: returns, no change\n(error metric) {class: fail}
+}
+
+admit: 1. Admission {
+  class: phase
+
+  watch: Watch node object\nand its Jobs {class: step}
+  pred: Note which conditions\njust turned True {class: step}
+  deq: Reconcile starts {class: step}
+  exists: Node\nexists? {class: gate}
+  flips: Count this episode once {class: step}
+  cfg: Read ConfigMap {class: step}
+  jobs: Report failed mitigation Jobs\n(job_failed_info while\nthe Job exists) {class: step}
+
+  gone: Delete per-node series\nafter 2m grace {class: skip}
+  bad: Exit the process\n(CrashLoopBackOff until fixed) {class: fail}
+
+  watch -> pred: {class: spine}
+  pred -> deq: {class: spine}
+  deq -> exists: {class: spine}
+  exists -> flips: yes {class: spine}
+  exists -> gone: not found
+  flips -> cfg: {class: spine}
+  cfg -> jobs: ok {class: spine}
+  cfg -> bad: malformed
+}
+
+resolve: 2. Resolve the owner and steps {
+  class: phase
+
+  cmt: Mitigation recorded\non the node? {class: gate}
+  owner: Owner: the condition in\nnode-mitigated-condition if configured,\nelse the first condition past its "for" window {class: step}
+  any: Owner\nfound? {class: gate}
+  waiting: Any condition still inside\nits "for" window? {class: gate}
+  merge: Merge the other eligible conditions\n(one that makes the steps more\naggressive becomes the owner) {class: step}
+  en: Controller\nenabled? {class: gate}
+  remerge: Merge the owner's current config\nand the eligible conditions\ninto the recorded steps {class: step}
+  changed: Steps more\naggressive? {class: gate}
+  addtaint: Adds the\ntaint? {class: gate}
+
+  pend: skipped reason=pending\n(requeue when the window ends) {class: skip}
+  noop: Nothing to mitigate {class: skip}
+  dis: skipped reason=disabled\n(nothing advances) {class: skip}
+
+  cmt -> owner: no {class: spine}
+  owner -> any: {class: spine}
+  any -> merge: yes {class: spine}
+  any -> waiting: no
+  waiting -> pend: yes
+  waiting -> noop: no
+  cmt -> en: yes
+  en -> dis: no
+  en -> remerge: yes
+  remerge -> changed
+  changed -> addtaint: yes
+}
+
+gates: 3. Gates {
+  class: phase
+
+  en: Controller\nenabled? {class: gate}
+  lbl: Excluded by label,\nannotation or taint? {class: gate}
+  ns: Pods in an excluded\nnamespace? {class: gate}
+  dry: Dry-run? {class: gate}
+  taints: Steps taint an\nuntainted node? {class: gate}
+  cool: Global cooldown\nactive? {class: gate}
+  ts: Persist cooldown timestamp\nbefore tainting {class: mutate}
+
+  dis: skipped reason=disabled {class: skip}
+  exc: skipped reason=label,\nannotation or taint {class: skip}
+  nsx: skipped reason=namespace {class: skip}
+  pods: error reason=list_pods\n(fail closed, requeue 30s) {class: fail}
+  dryx: skipped reason=dry_run\n(node_mitigated_info tainted=false) {class: skip}
+  coolx: skipped reason=cooldown\n(requeue when it expires) {class: skip}
+  tserr: error reason=persist_timestamp\n(no taint, requeue 30s) {class: fail}
+
+  en -> lbl: yes {class: spine}
+  en -> dis: no
+  lbl -> ns: no {class: spine}
+  lbl -> exc: yes
+  ns -> dry: no {class: spine}
+  ns -> nsx: yes
+  ns -> pods: list error
+  dry -> taints: no {class: spine}
+  dry -> dryx: --dry-run
+  taints -> cool: yes {class: spine}
+  cool -> coolx: yes
+  cool -> ts: no {class: spine}
+  ts -> tserr: error
+}
+
+commit: 4. Commit {
+  class: phase
+
+  ap: Record owner and steps,\ntaint if the steps taint,\nselect the pre-mitigation Job\n(one patch) {class: mutate}
+  esc: Record the new owner and steps,\ntaint if added, select the owner's\npre-mitigation Job if none yet {class: mutate}
+  met: Record mitigation started\nor escalated (metrics + event) {class: step}
+
+  aperr: error reason=commit_mitigation\n(retry with backoff) {class: fail}
+  escerr: error reason=record_escalation\n(retry with backoff) {class: fail}
+
+  ap -> met: ok {class: spine}
+  ap -> aperr: error
+  esc -> met: ok
+  esc -> escerr: error
+}
+
+cont: 5. Continuation {
+  class: phase
+
+  observe: Steps taint? {class: gate}
+  ended: Owner condition no longer True\nand pre-mitigation Job finished? {class: gate}
+  end: Clear the mitigation annotations\nand per-node gauges {class: mutate}
+  wait: Pre-mitigation Job\npermits continuation? {class: gate}
+  drain: Drain\nenabled? {class: gate}
+  requested: Mitigation Job\nalready launched? {class: gate}
+  drained: Already\ndrained? {class: gate}
+  timeout: Drain timeout exceeded?\n(from the first drain pass) {class: gate}
+  skipdel: Skip pod\ndeletion? {class: gate}
+  ev: Eviction pass {class: mutate}
+  del: Delete remaining pods\ngracefully, bypassing PDBs {class: mutate}
+  stalled: Remaining pods\nstuck terminating? {class: gate}
+  stalljob: Mitigation Job\nconfigured? {class: gate}
+  stl: Report the stall\n(drain_stalled_info, DrainStalled event) {class: step}
+  remaining: Evictable pods\nremaining? {class: gate}
+  ann: Annotate drained {class: mutate}
+  track: Track the stall from the pods\n(drain_stalled_info, read-only) {class: step}
+  job: Mitigation Job\nconfigured? {class: gate}
+  launched: Mitigation Job\nalready launched? {class: gate}
+  template: Template in\nthe jobs map? {class: gate}
+  launch: Launch mitigation Job\nand record its name {class: mutate}
+
+  enderr: error reason=end_mitigation\n(retry with backoff) {class: fail}
+  waitx: Pending pre-mitigation Job or blocked failure\n(retry / continue action permits progress) {class: skip}
+  more: Requeue 20s\n(5m after a PDB block) {class: skip}
+  stallend: Wait for an operator\n(requeue 20s) {class: skip}
+  joberr: error reason=launch_mitigation_job\nor annotate_mitigation_job (requeue 20s) {class: fail}
+
+  observe -> wait: yes {class: spine}
+  observe -> ended: no
+  ended -> end: yes
+  ended -> wait: no
+  end -> enderr: error
+  wait -> drain: no pre-mitigation Job /\nsuccess / Continue {class: spine}
+  wait -> waitx: pending / Block
+  drain -> requested: yes {class: spine}
+  drain -> job: no
+  requested -> track: yes
+  requested -> drained: no {class: spine}
+  drained -> job: yes
+  drained -> timeout: no {class: spine}
+  timeout -> ev: no {class: spine}
+  timeout -> skipdel: yes
+  skipdel -> job: yes, leave the pods
+  skipdel -> del: no
+  ev -> stalled: {class: spine}
+  del -> stalled
+  stalled -> remaining: no {class: spine}
+  stalled -> stalljob: yes
+  stalljob -> job: yes, leave the pods
+  stalljob -> stl: no
+  stl -> stallend
+  remaining -> ann: no {class: spine}
+  remaining -> more: yes
+  ann -> job: {class: spine}
+  job -> launched: yes {class: spine}
+  launched -> template: no {class: spine}
+  template -> launch: yes {class: spine}
+  launch -> joberr: error
+}
+
+admit.jobs -> resolve.cmt: {class: spine}
+resolve.merge -> gates.en: {class: spine}
+resolve.addtaint -> gates.lbl: yes
+gates.taints -> commit.ap: no, new mitigation {class: spine}
+gates.ts -> commit.ap: ok, new mitigation {class: spine}
+gates.taints -> commit.esc: no, escalation
+gates.ts -> commit.esc: ok, escalation
+resolve.addtaint -> commit.esc: no (dry-run only logs)
+commit.met -> cont.observe: {class: spine}
+
+resolve.changed -> cont.observe: no, continue where it left off {
+  style: {
+    stroke: "#b45309"
+    stroke-width: 3
+  }
+}
