@@ -627,6 +627,31 @@ excludeNamespaces: [protected]
 		Expect(counterValue(drainPodActionsTotal, node.Name, "CustomCheck", actionDeletePod, deleteOutcomeDeleted)).To(Equal(1.0))
 	})
 
+	It("evicts pods in excluded namespaces from a node already draining", func() {
+		configure("conditions:\n  CustomCheck: {}\nexcludeNamespaces: [drain-excluded]\n", "")
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "drain-excluded"}}
+		Expect(k8sClient.Create(ctx, ns)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, ns) })
+		node := newNode("drain-excluded-namespace", badCondition("CustomCheck"))
+		node.Annotations = map[string]string{
+			AnnotationMitigatedCondition: "CustomCheck",
+			AnnotationMitigatedAt:        now.Add(-time.Hour).Format(time.RFC3339Nano),
+			AnnotationMitigationPlan:     (plan{taint: true, drain: true, drainTimeout: drainNever}).String(),
+			AnnotationDrainStartedAt:     now.Add(-time.Minute).Format(time.RFC3339Nano),
+		}
+		Expect(k8sClient.Update(ctx, node)).To(Succeed())
+		pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "excluded-workload", Namespace: ns.Name}, Spec: corev1.PodSpec{NodeName: node.Name, Containers: []corev1.Container{{Name: "c", Image: "busybox"}}}}
+		Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, pod) })
+		_, err := reconcileNode(node.Name)
+		Expect(err).NotTo(HaveOccurred())
+		evicted := &corev1.Pod{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pod.Name, Namespace: pod.Namespace}, evicted)).To(Succeed())
+		Expect(evicted.DeletionTimestamp).NotTo(BeNil())
+		Expect(counterValue(drainPodActionsTotal, node.Name, "CustomCheck", actionEvictPod, evictionOutcomeEvicted)).To(Equal(1.0))
+		Expect(getNode(node.Name).Annotations).NotTo(HaveKey(AnnotationDrainFinishedAt))
+	})
+
 	It("leaves pods after timeout when skipPodDeletion is enabled", func() {
 		configure("conditions:\n  CustomCheck: {drainTimeout: 1s, skipPodDeletion: true, mitigationJob: {name: mitigate}}\n", jobTemplates)
 		node := newNode("drain-timeout-skip", badCondition("CustomCheck"))

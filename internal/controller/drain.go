@@ -3,7 +3,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"slices"
 	"strings"
 	"time"
 
@@ -65,8 +64,8 @@ const (
 // reportDrainStalled records the DrainStalled Event for a node without a
 // mitigation Job, naming the pods the kubelet is not removing. The pod names only feed the Event, so a
 // failed list goes into the Event instead of a retry.
-func (r *NodeReconciler) reportDrainStalled(ctx context.Context, node *corev1.Node, stallTimeout time.Duration, excludeNamespaces []string) {
-	pods, err := r.evictablePods(ctx, node, excludeNamespaces)
+func (r *NodeReconciler) reportDrainStalled(ctx context.Context, node *corev1.Node, stallTimeout time.Duration) {
+	pods, err := r.evictablePods(ctx, node)
 	if err != nil {
 		logf.FromContext(ctx).Error(err, "Failed to list the pods of a stalled drain", "node", node.Name)
 		reconcileErrorsTotal.WithLabelValues("list_pods_drain").Inc()
@@ -103,7 +102,7 @@ const (
 // pre-mitigation Job. Pods are evicted until timeout has elapsed, then deleted
 // gracefully, bypassing PDBs; skipPodDeletion ends the drain at the timeout
 // instead. A negative timeout evicts indefinitely.
-func (r *NodeReconciler) drainNode(ctx context.Context, node *corev1.Node, condition string, timeout, stallTimeout time.Duration, skipPodDeletion bool, excludeNamespaces []string, reqs []DrainRequestConfig) (drainOutcome, ctrl.Result) {
+func (r *NodeReconciler) drainNode(ctx context.Context, node *corev1.Node, condition string, timeout, stallTimeout time.Duration, skipPodDeletion bool, reqs []DrainRequestConfig) (drainOutcome, ctrl.Result) {
 	if _, started := node.Annotations[AnnotationDrainStartedAt]; !started {
 		base := node.DeepCopy()
 		if node.Annotations == nil {
@@ -131,7 +130,7 @@ func (r *NodeReconciler) drainNode(ctx context.Context, node *corev1.Node, condi
 		}
 		rem = removeDelete
 	}
-	return r.drainPass(ctx, node, condition, excludeNamespaces, rem, stallTimeout, reqs)
+	return r.drainPass(ctx, node, condition, rem, stallTimeout, reqs)
 }
 
 // drainPass runs a single eviction pass over the node's pods and reports whether
@@ -144,10 +143,10 @@ func (r *NodeReconciler) drainNode(ctx context.Context, node *corev1.Node, condi
 // Returns done=true only when the node is fully drained and the annotation is
 // (already or newly) set. On a transient error it returns done=false with a
 // requeue, mirroring the other cooldown-free retry paths.
-func (r *NodeReconciler) drainPass(ctx context.Context, node *corev1.Node, condition string, excludeNamespaces []string, rem podRemoval, stallTimeout time.Duration, reqs []DrainRequestConfig) (drainOutcome, ctrl.Result) {
+func (r *NodeReconciler) drainPass(ctx context.Context, node *corev1.Node, condition string, rem podRemoval, stallTimeout time.Duration, reqs []DrainRequestConfig) (drainOutcome, ctrl.Result) {
 	log := logf.FromContext(ctx)
 
-	state, err := r.removePods(ctx, node, condition, excludeNamespaces, rem, reqs)
+	state, err := r.removePods(ctx, node, condition, rem, reqs)
 	if err != nil {
 		// Could not list the node's pods during drain. Counted separately from the
 		// pre-taint exclusion-check list failure (reason=list_pods) so the two paths,
@@ -233,12 +232,12 @@ func (s drainState) stalled(stallTimeout time.Duration) bool {
 }
 
 // drainStateOf summarizes the evictable pods; blocked is left to the caller.
-func drainStateOf(pods []corev1.Pod, excludeNamespaces []string) drainState {
+func drainStateOf(pods []corev1.Pod) drainState {
 	var st drainState
 	allTerminating := true
 	for i := range pods {
 		pod := &pods[i]
-		if !isEvictable(pod, excludeNamespaces) {
+		if !isEvictable(pod) {
 			continue
 		}
 		st.remaining++
@@ -263,10 +262,10 @@ func drainStateOf(pods []corev1.Pod, excludeNamespaces []string) drainState {
 // PodDisruptionBudgets. removeDelete deletes directly, bypassing PDBs but
 // honouring terminationGracePeriodSeconds.
 //
-// DaemonSet, mirror, completed, and excluded-namespace pods are skipped and
-// never counted. Pods that are evicting or already terminating count toward
-// remaining, so the drain is not complete until they leave the node.
-func (r *NodeReconciler) removePods(ctx context.Context, node *corev1.Node, condition string, excludeNamespaces []string, rem podRemoval, reqs []DrainRequestConfig) (drainState, error) {
+// DaemonSet, mirror and completed pods are skipped and never counted. Pods
+// that are evicting or already terminating count toward remaining, so the
+// drain is not complete until they leave the node.
+func (r *NodeReconciler) removePods(ctx context.Context, node *corev1.Node, condition string, rem podRemoval, reqs []DrainRequestConfig) (drainState, error) {
 	log := logf.FromContext(ctx)
 
 	var podList corev1.PodList
@@ -274,12 +273,12 @@ func (r *NodeReconciler) removePods(ctx context.Context, node *corev1.Node, cond
 		return drainState{}, fmt.Errorf("listing pods on node %s: %w", node.Name, err)
 	}
 
-	st := drainStateOf(podList.Items, excludeNamespaces)
+	st := drainStateOf(podList.Items)
 	var blocked, failedEvict, deleted, failedDelete, requested, failedRequest []string
 	for i := range podList.Items {
 		pod := &podList.Items[i]
 		// Already terminating: wait for it. Never cut the grace period short.
-		if pod.DeletionTimestamp != nil || !isEvictable(pod, excludeNamespaces) {
+		if pod.DeletionTimestamp != nil || !isEvictable(pod) {
 			continue
 		}
 		if rem == removeDelete {
@@ -399,14 +398,14 @@ func (r *NodeReconciler) removePods(ctx context.Context, node *corev1.Node, cond
 // evictablePods lists the "namespace/name" of every evictable pod still on the
 // node, in API server order. The DrainTimeout and DrainStalled Events name them
 // when a drain gives up and leaves them for the mitigation Job.
-func (r *NodeReconciler) evictablePods(ctx context.Context, node *corev1.Node, excludeNamespaces []string) ([]string, error) {
+func (r *NodeReconciler) evictablePods(ctx context.Context, node *corev1.Node) ([]string, error) {
 	var podList corev1.PodList
 	if err := r.APIReader.List(ctx, &podList, client.MatchingFields{podNodeNameField: node.Name}); err != nil {
 		return nil, fmt.Errorf("listing pods on node %s: %w", node.Name, err)
 	}
 	var refs []string
 	for i := range podList.Items {
-		if pod := &podList.Items[i]; isEvictable(pod, excludeNamespaces) {
+		if pod := &podList.Items[i]; isEvictable(pod) {
 			refs = append(refs, pod.Namespace+"/"+pod.Name)
 		}
 	}
@@ -494,14 +493,9 @@ func (r *NodeReconciler) requestDrain(ctx context.Context, pod *corev1.Pod, req 
 }
 
 // isEvictable reports whether a pod should be evicted as part of draining a
-// node. It mirrors the standard "kubectl drain" skip rules and additionally
-// honours the controller's excluded namespaces so protected workloads are never
-// evicted.
-func isEvictable(pod *corev1.Pod, excludeNamespaces []string) bool {
-	// Never evict workloads from protected namespaces.
-	if slices.Contains(excludeNamespaces, pod.Namespace) {
-		return false
-	}
+// node, following the standard "kubectl drain" skip rules. Excluded namespaces
+// only gate the start of a mitigation, so they do not apply here.
+func isEvictable(pod *corev1.Pod) bool {
 	// Completed pods are not running and need no eviction.
 	if pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
 		return false
@@ -543,14 +537,14 @@ func drainEndStalled(stallTimeout time.Duration) drainEnd {
 // launched, without touching the node's pods. It runs on reconciles that
 // happen anyway (Node updates, the startup sync after a restart) and never
 // requeues on its own.
-func (r *NodeReconciler) trackStallGauge(ctx context.Context, node *corev1.Node, condition string, excludeNamespaces []string, stallTimeout time.Duration) {
+func (r *NodeReconciler) trackStallGauge(ctx context.Context, node *corev1.Node, condition string, stallTimeout time.Duration) {
 	var podList corev1.PodList
 	if err := r.APIReader.List(ctx, &podList, client.MatchingFields{podNodeNameField: node.Name}); err != nil {
 		logf.FromContext(ctx).Error(err, "Failed to list pods for the drain stall gauge", "node", node.Name)
 		reconcileErrorsTotal.WithLabelValues("list_pods_drain").Inc()
 		return
 	}
-	setDrainStalledInfo(node.Name, condition, drainStateOf(podList.Items, excludeNamespaces).stalled(stallTimeout))
+	setDrainStalledInfo(node.Name, condition, drainStateOf(podList.Items).stalled(stallTimeout))
 }
 
 // drainTimedOut reports whether the drain ran past timeout, measured from

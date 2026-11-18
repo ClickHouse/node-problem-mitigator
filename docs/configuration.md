@@ -64,6 +64,8 @@ app:
 `terminate` and `capture-node` name templates in the [`jobs` map](jobs.md).
 The controller skips a node if it matches any exclusion.
 Excluding a namespace also excludes every node running a pod in that namespace.
+Exclusions are checked only when a mitigation starts or adds the taint. A drain already in
+progress also evicts pods in excluded namespaces.
 
 | `app.config` field | Default | Meaning |
 |---|---|---|
