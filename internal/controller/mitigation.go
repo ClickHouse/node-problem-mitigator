@@ -276,7 +276,7 @@ func (r *NodeReconciler) advance(ctx context.Context, node *corev1.Node, owner s
 		stallTimeout, _ := parseOptionalDuration(cfg.StallTimeout)
 		if mitigationJobLaunched(node, p.job) {
 			// The Job owns the node now; never resume pod removal.
-			r.trackStallGauge(ctx, node, owner, cfg.ExcludeNamespaces, stallTimeout)
+			r.trackStallGauge(ctx, node, owner, stallTimeout)
 			return ctrl.Result{}, nil
 		}
 		res, drainEnd, done := r.drainStep(ctx, node, owner, p, stallTimeout, cfg)
@@ -298,7 +298,7 @@ func (r *NodeReconciler) drainStep(ctx context.Context, node *corev1.Node, owner
 	if _, drained := node.Annotations[AnnotationDrainFinishedAt]; drained {
 		return ctrl.Result{}, nil, true
 	}
-	outcome, res := r.drainNode(ctx, node, owner, p.drainTimeout, stallTimeout, p.skipPodDeletion && p.job != "", cfg.ExcludeNamespaces, cfg.DrainRequests)
+	outcome, res := r.drainNode(ctx, node, owner, p.drainTimeout, stallTimeout, p.skipPodDeletion && p.job != "", cfg.DrainRequests)
 	switch outcome {
 	case drainInProgress:
 		return res, nil, false
@@ -308,7 +308,7 @@ func (r *NodeReconciler) drainStep(ctx context.Context, node *corev1.Node, owner
 	case drainStalled:
 		if p.job == "" {
 			if r.drainStalls.mark(node.UID, "") {
-				r.reportDrainStalled(ctx, node, stallTimeout, cfg.ExcludeNamespaces)
+				r.reportDrainStalled(ctx, node, stallTimeout)
 			}
 			return res, nil, false
 		}
@@ -329,7 +329,7 @@ func (r *NodeReconciler) launchPlanJob(ctx context.Context, node *corev1.Node, o
 	var undrained []string
 	if end != nil && !mitigationJobLaunched(node, job) {
 		// The pod names only feed the Event, so a failed list must not hold up the Job.
-		pods, err := r.evictablePods(ctx, node, cfg.ExcludeNamespaces)
+		pods, err := r.evictablePods(ctx, node)
 		if err != nil {
 			logf.FromContext(ctx).Error(err, "Failed to list pods left on node, launching the mitigation Job anyway", "node", node.Name)
 			reconcileErrorsTotal.WithLabelValues("list_pods_drain").Inc()
