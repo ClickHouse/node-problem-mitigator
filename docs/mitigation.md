@@ -98,7 +98,7 @@ remaining pods with their grace periods, bypassing PodDisruptionBudgets, then wa
 leave. With `skipPodDeletion: true` it instead leaves the remaining pods in place and launches
 the mitigation Job.
 
-[![Drain timeout animation](terminate-timeout.svg#play-0-a)](terminate-timeout.svg?raw=true)
+[![Drain timeout animation](terminate-timeout.svg#play-0-a)][drain-timeout-animation]
 
 A drain is stalled when every remaining evictable pod is more than `stallTimeout` past its
 deletion deadline. A pod's deadline is its deletion time plus its grace period.
@@ -107,7 +107,7 @@ A stalled drain launches the mitigation Job, leaving the pods in place, regardle
 `drainTimeout` or `skipPodDeletion`. Without a mitigation Job it emits `DrainStalled` and waits
 for an operator to intervene.
 
-[![Drain stall animation](terminate-stall.svg#play-0-a)](terminate-stall.svg?raw=true)
+[![Drain stall animation](terminate-stall.svg#play-0-a)][drain-stall-animation]
 
 The controller does not force-delete pods. Removing a pod object while its process still runs
 can create duplicate StatefulSet replicas and cause split-brain. After a mitigation Job
@@ -127,7 +127,10 @@ does not relaunch it; terminate the instance directly instead.
 ## Lifecycle diagrams
 
 - [Reconcile overview](reconcile-overview.svg): safety gates, ownership, and continuation.
-- [Detailed reconcile flow](reconcile-flow.svg?raw=true): decisions and error paths.
-- [Standard mitigation animation](terminate-standard.svg?raw=true): pre-mitigation Job, graceful drain, and terminate Job.
-- [Drain timeout animation](terminate-timeout.svg?raw=true): graceful pod deletion before termination.
-- [Drain stall animation](terminate-stall.svg?raw=true): termination with pods left in place.
+- [Detailed reconcile flow](https://raw.githubusercontent.com/ClickHouse/node-problem-mitigator/refs/heads/main/docs/reconcile-flow.svg): decisions and error paths.
+- [Standard mitigation animation](https://raw.githubusercontent.com/ClickHouse/node-problem-mitigator/refs/heads/main/docs/terminate-standard.svg): pre-mitigation Job, graceful drain, and terminate Job.
+- [Drain timeout animation][drain-timeout-animation]: graceful pod deletion before termination.
+- [Drain stall animation][drain-stall-animation]: termination with pods left in place.
+
+[drain-timeout-animation]: https://raw.githubusercontent.com/ClickHouse/node-problem-mitigator/refs/heads/main/docs/terminate-timeout.svg
+[drain-stall-animation]: https://raw.githubusercontent.com/ClickHouse/node-problem-mitigator/refs/heads/main/docs/terminate-stall.svg
