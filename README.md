@@ -1,6 +1,6 @@
 # node-problem-mitigator
 
-[![Mitigation with a pre-mitigation Job](docs/terminate-standard.svg#play-0-a)](docs/terminate-standard.svg?raw=true)
+[![Mitigation with a pre-mitigation Job](docs/terminate-standard.svg#play-0-a)](https://raw.githubusercontent.com/ClickHouse/node-problem-mitigator/refs/heads/main/docs/terminate-standard.svg)
 
 A Kubernetes controller that responds to node problems with tainting, draining,
 and custom Jobs. It watches Node conditions reported by [Node Problem
