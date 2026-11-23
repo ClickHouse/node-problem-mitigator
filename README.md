@@ -6,6 +6,8 @@ A Kubernetes controller that responds to node problems with tainting, draining,
 and custom Jobs. It watches Node conditions reported by [Node Problem
 Detector](https://github.com/kubernetes/node-problem-detector) or another source.
 
+Read our article on motivation and how we integrate this component into ClickHouse Cloud infrastructure: https://clickhouse.com/blog/node-reliability-across-three-clouds
+
 ## Configuration
 
 Choose which Node conditions to watch and how to handle them in
